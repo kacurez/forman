@@ -5,7 +5,20 @@
             :url "https://www.eclipse.org/legal/epl-2.0/"}
   :dependencies [[org.clojure/clojure "1.10.0"]
                  [org.clojure/tools.reader "1.3.2"]]
-  :main forman.core
+  :plugins [[io.taylorwood/lein-native-image "0.3.0"]]
+
+  :main  ^:skip-aot forman.core
   :uberjar-name "forman.jar"
   :repl-options {:init-ns forman.core}
-  :profiles {:uberjar {:aot :all}})
+  :native-image {:opts ["--verbose"
+                        "--no-fallback"
+                        "--no-server"
+                        "--initialize-at-build-time"
+                        "--enable-url-protocols=http,https"
+                        "-H:ReflectionConfigurationFiles=reflection.json"
+                        "-H:+ReportExceptionStackTraces"
+                        "--report-unsupported-elements-at-runtime"]
+                 :name "forman"}
+
+  :profiles {:uberjar {:aot :all
+                       :native-image {:opts ["-Dclojure.compiler.direct-linking=true"]}}})

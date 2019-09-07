@@ -1,83 +1,165 @@
 (ns forman.core
   (:gen-class)
-  (:require [clojure.java.io :as io]
-            [clojure.tools.reader.edn :as edn]))
+  (:require
+   [clojure.java.shell :refer [sh]]
+   [clojure.string :as s]
+   [clojure.tools.reader.edn :as edn]))
 
-(defn lines-reducible
-  [^java.io.BufferedReader rdr]
-  (reify clojure.lang.IReduceInit
-    (reduce [this f init]
-      (try
-        (loop [state init]
-          (if (reduced? state)
-            @state
-            (if-let [line (.readLine rdr)]
-              (recur (f state line))
-              state)))
-        (finally
-          (.close rdr))))))
+(defn keywordize-maps-array [coll]
+  (map (fn [item] (into {} (map (fn [[k v]] [(keyword k) v]) item))) coll))
 
-(defn keywordize [bookmarks-array]
-  (map (fn [entry] (into {} (map (fn [[k v]] [(keyword k) v]) entry))) bookmarks-array))
+(defn parse-section [bookmark-name]
+  (if (some? bookmark-name)
+    (if-let [matched (re-matches #"^[^\[]*\[([^\]]+)\].*$" bookmark-name)]
+      (second matched))))
 
-(defn process-video-entry [[_ bookmarks-str file-str]]
-  (let [[_ bookmarks-split-str] (clojure.string/split bookmarks-str (re-pattern "bookmarks="))
-        bookmarks-replaced-time-str (clojure.string/replace bookmarks-split-str #",time=" "\",time ")
-        bookmarks-replaced-name-str (clojure.string/replace bookmarks-replaced-time-str #"name=" "name \"")
-        bookmarks-array-edn (str "[" bookmarks-replaced-name-str "]")
-        bookmarks-array (keywordize (edn/read-string bookmarks-array-edn))
-        bookmarks-array-sorted (sort-by :time bookmarks-array)]
-    {:file (str "'" (java.net.URLDecoder/decode file-str) "'")
-     :bookmarks bookmarks-array-sorted}))
+(defn parse-bookmarks-array [bookmarks-str]
+  (if (empty? bookmarks-str)
+    []
+    (as-> bookmarks-str x
+      (s/split x #"bookmarks=")
+      (second x)
+      (s/replace x #",time=" "\",time ")
+      (s/replace x #"name=" "name \"")
+      (str "[" x "]")
+      (edn/read-string x)
+      (keywordize-maps-array x)
+      (map #(update % :section (fn [entry] (parse-section (:name entry)))) x)
+      (sort-by :time x)
+      (sort-by :section x))))
 
-;;; before-after || after || -before
-(defn enhance-timestamps [{name :name time :time :as bookmark-entry}]
-  (conj bookmark-entry
-        (if-let [timestamps-str (first (clojure.string/split name #"\|"))]
-          (if-let [matched (re-matches #"^(\d+)?\-?(\d+)?$" timestamps-str)]
-            (let [[match1 match2 match3] matched]
-              (if
-               (and (some? match2) (some? match3))
-                {:start (+ time (* -1 (Integer/parseInt match2)))
-                 :end (+ time (Integer/parseInt match3))}
-;;;else match only first number
-                {:start (+ time (min 0 (Integer/parseInt match1)))
-                 :end (+ time (max 0 (Integer/parseInt match1)))}))))))
+(defn ensure-absolute-path [path playlist-file-path]
+  (if (s/starts-with? path "file:/")
+    (java.net.URLDecoder/decode path)
+    (str (.getParent (.getAbsoluteFile (java.io.File. playlist-file-path))) "/" path)))
+
+(defn playlist-entry->video-info [playlist-file-path]
+  (fn [[extinf bookmarks-str file-str]]
+    {:file  (str "'" (ensure-absolute-path file-str playlist-file-path) "'")
+     :bookmarks (parse-bookmarks-array bookmarks-str)
+     :duration (Integer/parseInt (subs (re-find #":\d+" extinf) 1))}))
+
+(defn parse-int [number-string]
+  (cond
+    (= number-string "s") :absolute-start
+    (= number-string "e") :absolute-end
+    :else (try (Integer/parseInt number-string)
+               (catch Exception e nil))))
+
+(defn parse-relative-range [range-str]
+  (let [matched (re-matches #"^(\d+|s)?\-?(\d+|e)?$" range-str)
+        deltaRangeMatch (parse-int (first matched))
+        rangeStart (parse-int (second matched))
+        rangeEnd (parse-int (nth matched 2))]
+    (if (some? matched)
+      (if (and (some? rangeStart) (some? rangeEnd))
+        {:start (if (= rangeStart :absolute-start) :absolute-start (* -1 rangeStart))
+         :end rangeEnd}
+        (if (some? deltaRangeMatch)
+          {:start (min 0 deltaRangeMatch)
+           :end (max 0 deltaRangeMatch)})))))
+
+(defn parse-range-timestamps [input-str time]
+  (some-> input-str
+          (s/split #"\|")
+          (first)
+          (s/trim)
+          (not-empty)
+          (parse-relative-range)
+          (update :start #(if (= % :absolute-start) :absolute-start (+ time %)))
+          (update :end #(if (= % :absolute-end) :absolute-end (+ time %)))))
+
+(defn collect-range-timestamps [{name :name time :time :as bookmark-entry}]
+  (merge bookmark-entry (parse-range-timestamps name time)))
+
 (defn join-timestamps [previous next]
   {:start (:time previous)
    :end (:time next)
    :name (str (:name previous) "+" (:name next))})
 
-(defn find-orphaned-timestamps [enhanced-timestamps]
-  (second (reduce (fn [[previous-ts result] ts]
-                    (if (some? (:start ts))
-                      [nil (conj result ts)]
-                      (if (some? previous-ts)
-                        [nil (conj result (join-timestamps previous-ts ts))]
-                        [ts result])))  [nil []] enhanced-timestamps)))
+(defn is-ranged-timestamp [timestamp]
+  (some? (:start timestamp)))
 
-(defn make-file-timestamps [bookmarks-info]
-  (let [enhanced-timestamps (map enhance-timestamps (:bookmarks bookmarks-info))
-        missing-timestamps (find-orphaned-timestamps enhanced-timestamps)]
-    (assoc bookmarks-info :timestamps missing-timestamps)))
+(defn group-non-range-timestamps []
+  (comp (partition-by #(not (is-ranged-timestamp %)))
+        (mapcat #(partition-all 2 %))
+        (mapcat (fn [ts-pair]
+                  (if (is-ranged-timestamp (first ts-pair))
+                    ts-pair
+                    [(join-timestamps (first ts-pair) (second ts-pair))])))))
 
-(defn print-ffmpeg-one-file-format [{:keys [file timestamps]}]
-  (doall (map (fn [{:keys [name start end]}]
-                (println "#" name)
-                (println (str "file " file))
-                (println "inpoint " start)
-                (println "outpoint" end)) timestamps)))
+(defn ignored-bookmark? [bookmark]
+  (let [bookmark-str (:name bookmark)]
+    (not (or (= "i" bookmark-str) (= "ignored" bookmark-str)))))
 
-(defn read-playlist [path]
-  (println "#ffmpeg -auto_convert 1 -f concat -safe 0 -i filescut -y -c copy -fflags +genpts -avoid_negative_ts make_zero result.mp4")
-  (.println *err*  "ffmpeg -auto_convert 1 -f concat -safe 0 -i filescut -y -c copy -fflags +genpts -avoid_negative_ts make_zero result.mp4")
-  (into []
-        (comp (drop 1)
-              (partition-all 3)
-              (map process-video-entry)
-              (map make-file-timestamps)
-              (map print-ffmpeg-one-file-format))
-        (lines-reducible (io/reader path))))
+(defn prepare-timestamps [bookmarks-array video-duration]
+  (eduction
+   (comp
+    (filter ignored-bookmark?)
+    (map collect-range-timestamps)
+    (group-non-range-timestamps)
+    (map (fn [ts] (update ts :start #(if (= % :absolute-start) 0 %))))
+    (map (fn [ts]  (update ts :end #(if (= % :absolute-end) video-duration %)))))
+   bookmarks-array))
+
+(defn video-info-bookmarks->timestamps [video-info]
+  (assoc video-info
+         :timestamps (prepare-timestamps (:bookmarks video-info) (:duration video-info))))
+
+(defn video-info->ffmpeg-script
+  ([{:keys [file timestamps]}]
+   (mapcat (fn [{:keys [name start end]}]
+             [(str "#" name)
+              (str (str "file " file))
+              (str "inpoint " start)
+              (str "outpoint " end)]) timestamps)))
+
+(defn print-result-lines
+  ([])
+  ([line] (if (some? line) (println line)))
+  ([line1 line2] (print-result-lines line1) (print-result-lines line2)))
+
+(defn group-to-playlistentry []
+  (comp (partition-by #(s/starts-with? % "#EXTINF"))
+        (partition-all 2)
+        (map flatten)
+        (map #(if (= 2 (count %)) (list (first %) "" (second %)) %))))
+
+#_(defn group-by-sections []
+    (comp (map #(update % :timestamps (partial group-by :section)))
+          (map #(map (fn [section] (assoc % :timestamps (get-in % [:timestamps section]) :section section)) (keys (:timestamps %))))
+          (map (partial sort-by :section))
+          (map (partial group-by :section))))
+
+(defn read-playlist [file-path apply-result-fn]
+  (transduce
+   (comp (drop 1)
+         (group-to-playlistentry)
+         (map (playlist-entry->video-info file-path))
+         (map video-info-bookmarks->timestamps)
+         (mapcat video-info->ffmpeg-script))
+   apply-result-fn
+   (s/split-lines (slurp file-path))))
+
+(defn prepare-ffmpeg-command [input-file-part output-file-path]
+  (let [first-part "-auto_convert 1 -f concat -safe 0 -i "
+        second-part " -y -c copy -fflags +genpts -flags global_header -movflags faststart -avoid_negative_ts make_zero -loglevel panic "
+        args (str first-part input-file-part second-part output-file-path)]
+    (str "ffmpeg " args)))
+
+(defn execute-ffmpeg-concat [input-file-path output-file-path]
+  (let [input-lines (read-playlist input-file-path conj)
+        file-content (s/join \newline input-lines)
+        file-content-echo (str "<(echo '" file-content "')")
+        command (prepare-ffmpeg-command file-content-echo output-file-path)]
+    #_(println args)
+    (println (:err (sh "bash" "-c" command)))
+    (shutdown-agents)))
 
 (defn -main [& args]
-  (read-playlist (first args)))
+  (if (= (count args) 2)
+    (execute-ffmpeg-concat (first args) (second args))
+    (let [ffmpeg-command (prepare-ffmpeg-command "inputfile" "result.mp4")]
+      (println (str "#" ffmpeg-command))
+      (.println *err*  ffmpeg-command)
+      (read-playlist (first args) print-result-lines))))
