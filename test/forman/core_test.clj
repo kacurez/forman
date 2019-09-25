@@ -127,7 +127,7 @@
   (let [tmp-file (java.io.File/createTempFile "forman-test" ".m3u")
         tmp-file-path (.getAbsolutePath tmp-file)]
     (spit tmp-file-path actual-file-content)
-    (let [actual-output (clojure.string/split-lines (with-out-str (execute-files-cut tmp-file-path print-script)))]
+    (let [actual-output (clojure.string/split-lines (with-out-str (execute-files-cut tmp-file-path print-script "'")))]
       (is (> (count actual-output) 1))
       (is (every? #(not (s/includes? % "nil")) actual-output))
       (is (every? valid-output-line? actual-output)))

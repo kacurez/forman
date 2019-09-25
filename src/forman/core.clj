@@ -39,9 +39,9 @@
     (java.net.URLDecoder/decode path)
     (str (.getParent (.getAbsoluteFile (java.io.File. playlist-file-path))) "/" path)))
 
-(defn playlist-entry->video-info [playlist-file-path]
+(defn playlist-entry->video-info [playlist-file-path escape-char]
   (fn [[extinf bookmarks-str file-str]]
-    {:file  (str "'" (ensure-absolute-path file-str playlist-file-path) "'")
+    {:file  (str escape-char (ensure-absolute-path file-str playlist-file-path) escape-char)
      :bookmarks (parse-bookmarks-array bookmarks-str)
      :duration (Integer/parseInt (subs (re-find #":\d+" extinf) 1))}))
 
@@ -135,11 +135,11 @@
    (map (partial sort-by :section))
    (map (partial group-by :section))))
 
-(defn parse-playlist-into-sections [file-path]
+(defn parse-playlist-into-sections [file-path escape-char]
   (transduce
    (comp (drop 1)
          (group-to-playlistentry)
-         (map (playlist-entry->video-info file-path))
+         (map (playlist-entry->video-info file-path escape-char))
          (map video-info-bookmarks->timestamps)
          (map #(dissoc % :bookmarks))
          (group-by-sections))
@@ -148,7 +148,7 @@
 
 (defn prepare-ffmpeg-command [input-file-part output-file-path]
   (let [first-part "-auto_convert 1 -f concat -safe 0 -i "
-        second-part " -y -c copy -fflags +genpts -flags global_header -movflags faststart -avoid_negative_ts make_zero -loglevel panic "
+        second-part " -y -c copy -fflags +genpts -flags global_header -movflags faststart -avoid_negative_ts make_zero -loglevel error "
         args (str first-part input-file-part second-part output-file-path)]
     (str "ffmpeg " args)))
 
@@ -173,17 +173,17 @@
       (println "#### SECTION:" section-name))
     (println lines-str)))
 
-(defn execute-files-cut [playlist-path execute-fn]
-  (let [sections (parse-playlist-into-sections playlist-path)]
+(defn execute-files-cut [playlist-path execute-fn escape-char]
+  (let [sections (parse-playlist-into-sections playlist-path escape-char)]
     (dorun (map (fn [[section-name video-info-coll]]
                   (execute-fn (video-info-coll->concat-script video-info-coll) section-name)) sections))))
 
 (defn -main [& args]
   (if (= (count args) 2)
     (do
-      (execute-files-cut (first args) (create-ffmpeg-concat-execute (second args)))
+      (execute-files-cut (first args) (create-ffmpeg-concat-execute (second args)) "'\"'\"'")
       (shutdown-agents))
     (let [ffmpeg-command (prepare-ffmpeg-command "inputfile" "result.mp4")]
       (println (str "#" ffmpeg-command))
       (.println *err*  ffmpeg-command)
-      (execute-files-cut (first args) print-script))))
+      (execute-files-cut (first args) print-script "'"))))
