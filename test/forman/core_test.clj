@@ -9,14 +9,15 @@
 (deftest parse-section-test
   (testing "should parse"
     (is (= (parse-section "asdasd[something]") "something"))
+    (is (= (parse-section "second [me]") "me"))
     (is (= (parse-section "asdasd[me and you] blablabla") "me and you"))
     (is (= (parse-section "asdasd[only me] [other]") "only me"))
     (is (= (parse-section "1-2|[only me] [other]") "only me")))
   (testing "should not parse"
-    (is (nil? (parse-section "asdasdasd")))
-    (is (nil? (parse-section "")))
-    (is (nil? (parse-section "1-2 [asdasd")))
-    (is (nil? (parse-section "|as")))))
+    (is (= "" (parse-section "asdasdasd")))
+    (is (= "" (parse-section "")))
+    (is (= "" (parse-section "1-2 [asdasd")))
+    (is (= "" (parse-section "|as")))))
 
 (deftest parse-range-timestamps-test
   (testing "should parse range with start end"

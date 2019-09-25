@@ -5,13 +5,19 @@
    [clojure.string :as s]
    [clojure.tools.reader.edn :as edn]))
 
+(defn printxf
+  ([] (printxf identity))
+  ([format-fn]
+   (map (fn [item] (println (format-fn item)) item))))
+
 (defn keywordize-maps-array [coll]
   (map (fn [item] (into {} (map (fn [[k v]] [(keyword k) v]) item))) coll))
 
 (defn parse-section [bookmark-name]
-  (if (some? bookmark-name)
-    (if-let [matched (re-matches #"^[^\[]*\[([^\]]+)\].*$" bookmark-name)]
-      (second matched))))
+  (or (if (some? bookmark-name)
+        (if-let [matched (re-matches #"^[^\[]*\[([^\]]+)\].*$" bookmark-name)]
+          (second matched)))
+      ""))
 
 (defn parse-bookmarks-array [bookmarks-str]
   (if (empty? bookmarks-str)
@@ -24,7 +30,7 @@
       (str "[" x "]")
       (edn/read-string x)
       (keywordize-maps-array x)
-      (map #(update % :section (fn [entry] (parse-section (:name entry)))) x)
+      (map #(assoc % :section (parse-section (:name %))) x)
       (sort-by :time x)
       (sort-by :section x))))
 
@@ -75,6 +81,7 @@
 (defn join-timestamps [previous next]
   {:start (:time previous)
    :end (:time next)
+   :section (:section previous)
    :name (str (:name previous) "+" (:name next))})
 
 (defn is-ranged-timestamp [timestamp]
@@ -106,18 +113,19 @@
   (assoc video-info
          :timestamps (prepare-timestamps (:bookmarks video-info) (:duration video-info))))
 
-(defn video-info->ffmpeg-script
-  ([{:keys [file timestamps]}]
-   (mapcat (fn [{:keys [name start end]}]
-             [(str "#" name)
-              (str (str "file " file))
-              (str "inpoint " start)
-              (str "outpoint " end)]) timestamps)))
-
 (defn print-result-lines
   ([])
   ([line] (if (some? line) (println line)))
   ([line1 line2] (print-result-lines line1) (print-result-lines line2)))
+
+(defn video-info->ffmpeg-script
+  [{:keys [file timestamps] :as entry}]
+  #_(println "FILE:" (keys entry))
+  (mapcat (fn [{:keys [name start end]}]
+            [(str "#" name " ")
+             (str (str "file " file))
+             (str "inpoint " start)
+             (str "outpoint " end)]) timestamps))
 
 (defn group-to-playlistentry []
   (comp (partition-by #(s/starts-with? % "#EXTINF"))
@@ -125,21 +133,28 @@
         (map flatten)
         (map #(if (= 2 (count %)) (list (first %) "" (second %)) %))))
 
-#_(defn group-by-sections []
-    (comp (map #(update % :timestamps (partial group-by :section)))
-          (map #(map (fn [section] (assoc % :timestamps (get-in % [:timestamps section]) :section section)) (keys (:timestamps %))))
-          (map (partial sort-by :section))
-          (map (partial group-by :section))))
+(defn group-by-sections []
+  (comp
+   (map #(update % :timestamps (partial group-by :section)))
+   (map #(map (fn [section] (assoc % :timestamps (get-in % [:timestamps section]) :section section)) (keys (:timestamps %))))
+   (map (partial sort-by :section))
+   (map (partial group-by :section))))
 
 (defn read-playlist [file-path apply-result-fn]
-  (transduce
-   (comp (drop 1)
-         (group-to-playlistentry)
-         (map (playlist-entry->video-info file-path))
-         (map video-info-bookmarks->timestamps)
-         (mapcat video-info->ffmpeg-script))
-   apply-result-fn
-   (s/split-lines (slurp file-path))))
+  (let [sections (transduce
+                  (comp (drop 1)
+                        (group-to-playlistentry)
+                        (map (playlist-entry->video-info file-path))
+                        (map video-info-bookmarks->timestamps)
+                        (map #(dissoc % :bookmarks))
+                        (group-by-sections))
+                  (partial merge-with concat)
+                  (s/split-lines (slurp file-path)))]
+    (transduce (comp
+                (mapcat second)
+                (mapcat video-info->ffmpeg-script))
+               apply-result-fn
+               sections)))
 
 (defn prepare-ffmpeg-command [input-file-part output-file-path]
   (let [first-part "-auto_convert 1 -f concat -safe 0 -i "
@@ -152,7 +167,6 @@
         file-content (s/join \newline input-lines)
         file-content-echo (str "<(echo '" file-content "')")
         command (prepare-ffmpeg-command file-content-echo output-file-path)]
-    #_(println args)
     (println (:err (sh "bash" "-c" command)))
     (shutdown-agents)))
 
