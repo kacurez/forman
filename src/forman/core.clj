@@ -152,14 +152,20 @@
         args (str first-part input-file-part second-part output-file-path)]
     (str "ffmpeg " args)))
 
+(defn prepare-output-path [section-name output-path]
+  (if (empty? section-name) output-path
+      (if-let [dot-idx (s/last-index-of output-path ".")]
+        (str (subs output-path 0 dot-idx) "_" section-name (subs output-path dot-idx))
+        (str output-path "_" section-name))))
+
 (defn create-ffmpeg-concat-execute [output-path]
   (fn [concat-script-lines section-name]
     (let [file-content (s/join \newline concat-script-lines)
-          output-file-path (if (empty? section-name) output-path (str output-path "_" section-name))
+          output-file-path (prepare-output-path section-name output-path)
           file-content-echo (str "<(echo '" file-content "')")
           command (prepare-ffmpeg-command file-content-echo output-file-path)]
-      (println (:err (sh "bash" "-c" command)))
-      (shutdown-agents))))
+      (println "creating" output-file-path "...")
+      (println (sh "bash" "-c" command)))))
 
 (defn print-script [concat-script-lines section-name]
   (let [lines-str (s/join \newline concat-script-lines)]
@@ -174,7 +180,9 @@
 
 (defn -main [& args]
   (if (= (count args) 2)
-    (execute-files-cut (first args) (create-ffmpeg-concat-execute (second args)))
+    (do
+      (execute-files-cut (first args) (create-ffmpeg-concat-execute (second args)))
+      (shutdown-agents))
     (let [ffmpeg-command (prepare-ffmpeg-command "inputfile" "result.mp4")]
       (println (str "#" ffmpeg-command))
       (.println *err*  ffmpeg-command)

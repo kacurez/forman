@@ -1,7 +1,18 @@
 (ns forman.core-test
   (:require [clojure.test :refer :all]
             [clojure.string :as s]
-            [forman.core :refer [parse-range-timestamps parse-relative-range group-non-range-timestamps execute-files-cut print-script parse-section]]))
+            [forman.core :refer [parse-range-timestamps parse-relative-range group-non-range-timestamps execute-files-cut print-script parse-section prepare-output-path]]))
+
+(deftest prepare-output-path-test
+  (testing "prepare path with some section name"
+    (is (= (prepare-output-path "aa" "bbb.mp4") "bbb_aa.mp4"))
+    (is (= (prepare-output-path "aa" "aaa.mp4") "aaa_aa.mp4"))
+    (is (= (prepare-output-path "xx" "a.asdasd.asdasd.mp4") "a.asdasd.asdasd_xx.mp4")))
+  (testing "prepare path without section name"
+    (is (= (prepare-output-path "" "bbb.mp4") "bbb.mp4"))
+    (is (= (prepare-output-path "" "b.bb.mp4") "b.bb.mp4")))
+  (testing "prepare path without file extension"
+    (is (= (prepare-output-path "aa" "bbb") "bbb_aa"))))
 
 (defn check-parsed-range [parsed start end]
   (and (= (:start parsed) start) (= (:end parsed) end)))
