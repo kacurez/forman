@@ -1,7 +1,7 @@
 (ns forman.core-test
   (:require [clojure.test :refer :all]
             [clojure.string :as s]
-            [forman.core :refer [parse-range-timestamps parse-relative-range group-non-range-timestamps read-playlist parse-section]]))
+            [forman.core :refer [parse-range-timestamps parse-relative-range group-non-range-timestamps execute-files-cut print-script parse-section]]))
 
 (defn check-parsed-range [parsed start end]
   (and (= (:start parsed) start) (= (:end parsed) end)))
@@ -116,7 +116,7 @@
   (let [tmp-file (java.io.File/createTempFile "forman-test" ".m3u")
         tmp-file-path (.getAbsolutePath tmp-file)]
     (spit tmp-file-path actual-file-content)
-    (let [actual-output (read-playlist tmp-file-path conj)]
+    (let [actual-output (clojure.string/split-lines (with-out-str (execute-files-cut tmp-file-path print-script)))]
       (is (> (count actual-output) 1))
       (is (every? #(not (s/includes? % "nil")) actual-output))
       (is (every? valid-output-line? actual-output)))
@@ -149,4 +149,11 @@ result.mp4
 result3.mp4
 #EXTINF:1534,result.mp4
 result.mp4
-")))
+")
+    (is-valid-output "#EXTM3U
+#EXTINF:271,test.mp4
+#EXTVLCOPT:bookmarks={name=Untitled,time=8.258},{name=Untitled,time=34.282},{name=Untitled[me],time=61.560},{name=Untitled[me],time=79.327},{name=first [me],time=6.256},{name=second [me],time=29.778}
+test.mp4
+#EXTINF:4988,output.MP4
+#EXTVLCOPT:bookmarks={name=start [me],time=136.386},{name=end [me],time=355.605},{name=5-10|Untitled,time=779.028}
+file:///Users/tomaskacur/Movies/output.MP4")))

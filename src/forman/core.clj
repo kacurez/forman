@@ -113,19 +113,14 @@
   (assoc video-info
          :timestamps (prepare-timestamps (:bookmarks video-info) (:duration video-info))))
 
-(defn print-result-lines
-  ([])
-  ([line] (if (some? line) (println line)))
-  ([line1 line2] (print-result-lines line1) (print-result-lines line2)))
-
-(defn video-info->ffmpeg-script
-  [{:keys [file timestamps] :as entry}]
-  #_(println "FILE:" (keys entry))
-  (mapcat (fn [{:keys [name start end]}]
-            [(str "#" name " ")
-             (str (str "file " file))
-             (str "inpoint " start)
-             (str "outpoint " end)]) timestamps))
+(defn video-info-coll->concat-script [video-info-coll]
+  (mapcat
+   (fn [{:keys [file timestamps]}]
+     (mapcat (fn [{:keys [name start end]}]
+               [(str "#" name " ")
+                (str (str "file " file))
+                (str "inpoint " start)
+                (str "outpoint " end)]) timestamps)) video-info-coll))
 
 (defn group-to-playlistentry []
   (comp (partition-by #(s/starts-with? % "#EXTINF"))
@@ -140,21 +135,16 @@
    (map (partial sort-by :section))
    (map (partial group-by :section))))
 
-(defn read-playlist [file-path apply-result-fn]
-  (let [sections (transduce
-                  (comp (drop 1)
-                        (group-to-playlistentry)
-                        (map (playlist-entry->video-info file-path))
-                        (map video-info-bookmarks->timestamps)
-                        (map #(dissoc % :bookmarks))
-                        (group-by-sections))
-                  (partial merge-with concat)
-                  (s/split-lines (slurp file-path)))]
-    (transduce (comp
-                (mapcat second)
-                (mapcat video-info->ffmpeg-script))
-               apply-result-fn
-               sections)))
+(defn parse-playlist-into-sections [file-path]
+  (transduce
+   (comp (drop 1)
+         (group-to-playlistentry)
+         (map (playlist-entry->video-info file-path))
+         (map video-info-bookmarks->timestamps)
+         (map #(dissoc % :bookmarks))
+         (group-by-sections))
+   (partial merge-with concat)
+   (s/split-lines (slurp file-path))))
 
 (defn prepare-ffmpeg-command [input-file-part output-file-path]
   (let [first-part "-auto_convert 1 -f concat -safe 0 -i "
@@ -162,18 +152,30 @@
         args (str first-part input-file-part second-part output-file-path)]
     (str "ffmpeg " args)))
 
-(defn execute-ffmpeg-concat [input-file-path output-file-path]
-  (let [input-lines (read-playlist input-file-path conj)
-        file-content (s/join \newline input-lines)
-        file-content-echo (str "<(echo '" file-content "')")
-        command (prepare-ffmpeg-command file-content-echo output-file-path)]
-    (println (:err (sh "bash" "-c" command)))
-    (shutdown-agents)))
+(defn create-ffmpeg-concat-execute [output-path]
+  (fn [concat-script-lines section-name]
+    (let [file-content (s/join \newline concat-script-lines)
+          output-file-path (if (empty? section-name) output-path (str output-path "_" section-name))
+          file-content-echo (str "<(echo '" file-content "')")
+          command (prepare-ffmpeg-command file-content-echo output-file-path)]
+      (println (:err (sh "bash" "-c" command)))
+      (shutdown-agents))))
+
+(defn print-script [concat-script-lines section-name]
+  (let [lines-str (s/join \newline concat-script-lines)]
+    (if (not-empty section-name)
+      (println "#### SECTION:" section-name))
+    (println lines-str)))
+
+(defn execute-files-cut [playlist-path execute-fn]
+  (let [sections (parse-playlist-into-sections playlist-path)]
+    (dorun (map (fn [[section-name video-info-coll]]
+                  (execute-fn (video-info-coll->concat-script video-info-coll) section-name)) sections))))
 
 (defn -main [& args]
   (if (= (count args) 2)
-    (execute-ffmpeg-concat (first args) (second args))
+    (execute-files-cut (first args) (create-ffmpeg-concat-execute (second args)))
     (let [ffmpeg-command (prepare-ffmpeg-command "inputfile" "result.mp4")]
       (println (str "#" ffmpeg-command))
       (.println *err*  ffmpeg-command)
-      (read-playlist (first args) print-result-lines))))
+      (execute-files-cut (first args) print-script))))
