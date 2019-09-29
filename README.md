@@ -1,6 +1,6 @@
 # forman
 
-A Clojure library designed to ... well, that part is up to you.
+cli tool to fast cut video files using ffmpeg by described bookmarks in vlc playlist m3u file
 
 ## Usage
 
