@@ -158,14 +158,13 @@
         (str (subs output-path 0 dot-idx) "_" section-name (subs output-path dot-idx))
         (str output-path "_" section-name))))
 
-(defn create-ffmpeg-concat-execute [output-path]
-  (fn [concat-script-lines section-name]
-    (let [file-content (s/join \newline concat-script-lines)
-          output-file-path (prepare-output-path section-name output-path)
-          file-content-echo (str "<(echo '" file-content "')")
-          command (prepare-ffmpeg-command file-content-echo output-file-path)]
-      (println "creating" output-file-path "...")
-      (println (sh "bash" "-c" command)))))
+(defn execute-ffmpeg-concat [output-path concat-script-lines section-name]
+  (let [file-content (s/join \newline concat-script-lines)
+        output-file-path (prepare-output-path section-name output-path)
+        file-content-echo (str "<(echo '" file-content "')")
+        command (prepare-ffmpeg-command file-content-echo output-file-path)]
+    (println "creating" output-file-path "...")
+    (println (sh "bash" "-c" command))))
 
 (defn print-script [concat-script-lines section-name]
   (let [lines-str (s/join \newline concat-script-lines)]
@@ -178,12 +177,22 @@
     (dorun (map (fn [[section-name video-info-coll]]
                   (execute-fn (video-info-coll->concat-script video-info-coll) section-name)) sections))))
 
+(defn create-videos [playlist-path output-path]
+  (execute-files-cut playlist-path
+                     (partial execute-ffmpeg-concat output-path)
+                     "'\"'\"'")
+  (shutdown-agents))
+
+(defn write-script-to-stdout [playlist-path]
+  (let [ffmpeg-command (prepare-ffmpeg-command "inputfile" "result.mp4")]
+    (println (str "#" ffmpeg-command))
+    (.println *err*  ffmpeg-command)
+    (execute-files-cut playlist-path print-script "'")))
+
 (defn -main [& args]
-  (if (= (count args) 2)
-    (do
-      (execute-files-cut (first args) (create-ffmpeg-concat-execute (second args)) "'\"'\"'")
-      (shutdown-agents))
-    (let [ffmpeg-command (prepare-ffmpeg-command "inputfile" "result.mp4")]
-      (println (str "#" ffmpeg-command))
-      (.println *err*  ffmpeg-command)
-      (execute-files-cut (first args) print-script "'"))))
+  (if-let [playlist-path (first args)]
+    (if (= (count args) 2)
+      (create-videos playlist-path (second args))
+      ;; else
+      (write-script-to-stdout playlist-path))
+    (println "usage: forman path-to-vlc-playlist [output-video-path]")))

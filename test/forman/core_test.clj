@@ -1,7 +1,7 @@
 (ns forman.core-test
   (:require [clojure.test :refer :all]
             [clojure.string :as s]
-            [forman.core :refer [parse-range-timestamps parse-relative-range group-non-range-timestamps execute-files-cut print-script parse-section prepare-output-path]]))
+            [forman.core :refer [parse-range-timestamps parse-relative-range group-non-range-timestamps write-script-to-stdout parse-section prepare-output-path]]))
 
 (deftest prepare-output-path-test
   (testing "prepare path with some section name"
@@ -127,7 +127,7 @@
   (let [tmp-file (java.io.File/createTempFile "forman-test" ".m3u")
         tmp-file-path (.getAbsolutePath tmp-file)]
     (spit tmp-file-path actual-file-content)
-    (let [actual-output (clojure.string/split-lines (with-out-str (execute-files-cut tmp-file-path print-script "'")))]
+    (let [actual-output (clojure.string/split-lines (with-out-str (write-script-to-stdout tmp-file-path)))]
       (is (> (count actual-output) 1))
       (is (every? #(not (s/includes? % "nil")) actual-output))
       (is (every? valid-output-line? actual-output)))
